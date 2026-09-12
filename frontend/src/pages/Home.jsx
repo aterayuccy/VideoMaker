@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import api from '../api';
 import { BuiltInMaterialCanvas } from '../components/BuiltInMaterialCanvas';
 import { builtInCharacters, builtInScenes } from '../components/builtInMaterialOptions';
@@ -70,7 +69,6 @@ const videoFormats = [
 ];
 
 function Home() {
-  const navigate = useNavigate();
   const [voice, setVoice] = useState(fallbackVoices[0].id);
   const [videoFormat, setVideoFormat] = useState('short');
   const [voices, setVoices] = useState(fallbackVoices);
@@ -80,7 +78,6 @@ function Home() {
   const [composeStatus, setComposeStatus] = useState('idle');
   const [composeError, setComposeError] = useState('');
   const [resultVideoUrl, setResultVideoUrl] = useState('');
-  const [resultVideoBlob, setResultVideoBlob] = useState(null);
   const [workflowStep, setWorkflowStep] = useState(1);
   const [selectedBuiltinCharacter, setSelectedBuiltinCharacter] = useState('');
   const [selectedBuiltinScene, setSelectedBuiltinScene] = useState('');
@@ -146,7 +143,6 @@ function Home() {
     }
 
     setResultVideoUrl('');
-    setResultVideoBlob(null);
     setComposeStatus('idle');
     setComposeError('');
   };
@@ -605,7 +601,6 @@ function Home() {
       }
 
       setResultVideoUrl(videoUrl);
-      setResultVideoBlob(res.data);
       setComposeStatus('ready');
     } catch (error) {
       let errorMessage = '影片合成失敗，請稍後再試。';
@@ -624,23 +619,6 @@ function Home() {
 
       setComposeStatus('idle');
       setComposeError(errorMessage);
-    }
-  };
-
-  const saveVideo = async () => {
-    if (!resultVideoBlob) return;
-
-    const formData = new FormData();
-    formData.append('title', `合成影片 ${new Date().toLocaleString('zh-TW')}`);
-    formData.append('video', resultVideoBlob, `video-${Date.now()}.mp4`);
-    formData.append('video_format', videoFormat);
-
-    try {
-      await api.post('/api/videos/', formData);
-      alert('您已儲存影片');
-      navigate('/works');
-    } catch (error) {
-      alert(error.response?.data?.detail || '影片儲存失敗，請稍後再試。');
     }
   };
 
@@ -1082,9 +1060,6 @@ function Home() {
             {resultVideoUrl && (
               <div className={`result-preview result-preview--${videoFormat}`}>
                 <video src={resultVideoUrl} controls />
-                <button type="button" className="save-video-button" onClick={saveVideo}>
-                  儲存影片
-                </button>
               </div>
             )}
           </div>
