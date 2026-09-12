@@ -1,0 +1,27 @@
+# Free preview: local videos and SQLite data reset on restart or sleep.
+services:
+  - type: web
+    name: videomaker
+    runtime: docker
+    repo: https://github.com/aterayuccy/VideoMaker
+    branch: codex/video-workflow-updates
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health/
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DB_ENGINE
+        value: sqlite
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: GUNICORN_TIMEOUT
+        value: "900"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"

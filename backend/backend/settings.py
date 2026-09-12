@@ -52,6 +52,10 @@ railway_public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
 if railway_public_domain and railway_public_domain not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(railway_public_domain)
 
+render_hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
+if render_hostname and render_hostname not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(render_hostname)
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
@@ -113,7 +117,8 @@ if DATABASE_ENGINE == "sqlite":
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": os.getenv("SQLITE_PATH", BASE_DIR / "db.sqlite3"),
+            "OPTIONS": {"timeout": 20},
         }
     }
 elif DATABASE_ENGINE == "mysql":
@@ -211,6 +216,9 @@ CSRF_TRUSTED_ORIGINS = env_list(
     "CSRF_TRUSTED_ORIGINS",
     "https://*.railway.app",
 )
+
+if render_hostname:
+    CSRF_TRUSTED_ORIGINS.append(f"https://{render_hostname}")
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = not DEBUG
