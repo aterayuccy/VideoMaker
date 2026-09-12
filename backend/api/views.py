@@ -19,15 +19,10 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.http import FileResponse, HttpResponse
-from rest_framework import generics, status
-from rest_framework.decorators import api_view, parser_classes, permission_classes
-from rest_framework.parsers import MultiPartParser
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
-from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
-
-from .models import Note, SavedVideo
-from .serializers import NoteSerializer, SavedVideoSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +49,8 @@ SUBTITLE_FONT_PATH = Path(
 )
 SUBTITLE_MAX_LINES = 2
 SUBTITLE_FONT_SIZE = 36
+ASS_SUBTITLE_FONT_SIZE = 52
+ASS_SUBTITLE_POSITION_OFFSET = 20
 SUBTITLE_HORIZONTAL_MARGIN = 24
 SUBTITLE_VERTICAL_MARGIN = 18
 SUBTITLE_STROKE_WIDTH = 3
@@ -208,7 +205,10 @@ def write_ass_subtitle_file(text, duration, max_line_width, target_path, target_
             .replace("}", "\\}")
             .replace("\n", "\\N")
         )
-        positioned_text = f"{{\\an8\\pos({width // 2},{subtitle_top})}}{cue_text}"
+        positioned_text = (
+            f"{{\\an8\\pos({width // 2},{subtitle_top + ASS_SUBTITLE_POSITION_OFFSET})}}"
+            f"{cue_text}"
+        )
         dialogues.append(
             "Dialogue: 0,"
             f"{format_ass_timestamp(start)},{format_ass_timestamp(end)},"
@@ -226,7 +226,7 @@ def write_ass_subtitle_file(text, duration, max_line_width, target_path, target_
             "",
             "[V4+ Styles]",
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-            "Style: Default,Noto Sans CJK TC,36,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,8,24,24,0,1",
+            f"Style: Default,Noto Sans CJK TC,{ASS_SUBTITLE_FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,8,24,24,0,1",
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -295,78 +295,6 @@ def render_video_segment(video_path, audio_path, subtitle_path, output_path, tar
     if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
         logger.error("FFmpeg segment render failed: %s", result.stderr[-4000:])
         raise RuntimeError("影片片段轉檔失敗，請更換素材後再試。")
-
-
-def workspace_id(request):
-    try:
-        return uuid.UUID(request.headers.get("X-Workspace-ID", ""))
-    except (ValueError, AttributeError):
-        raise ValidationError({"detail": "A valid X-Workspace-ID is required."})
-
-
-class NoteListCreate(generics.ListCreateAPIView):
-    serializer_class = NoteSerializer
-    permission_classes = [AllowAny]
-
-    def get_queryset(self):
-        workspace = workspace_id(self.request)
-        return Note.objects.filter(workspace_id=workspace)
-
-    def perform_create(self, serializer):
-        if serializer.is_valid():
-            serializer.save(workspace_id=workspace_id(self.request))
-        else:
-            print(serializer.errors)
-
-
-class NoteDelete(generics.DestroyAPIView):
-    serializer_class = NoteSerializer
-    permission_classes = [AllowAny]
-
-    def get_queryset(self):
-        workspace = workspace_id(self.request)
-        return Note.objects.filter(workspace_id=workspace)
-
-
-class SavedVideoListCreate(generics.ListCreateAPIView):
-    serializer_class = SavedVideoSerializer
-    permission_classes = [AllowAny]
-    parser_classes = [MultiPartParser]
-
-    def get_queryset(self):
-        return SavedVideo.objects.filter(workspace_id=workspace_id(self.request)).order_by("-created_at")
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
-
-    def create(self, request, *args, **kwargs):
-        video_file = request.FILES.get("video")
-        video_format = request.data.get("video_format") or SavedVideo.VideoFormat.LONG
-
-        if video_format not in VIDEO_FORMATS:
-            return Response({"detail": "Invalid video format."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not video_file:
-            return Response({"detail": "請先選擇要儲存的影片。"}, status=status.HTTP_400_BAD_REQUEST)
-
-        saved_video = SavedVideo.objects.create(
-            workspace_id=workspace_id(request),
-            title=request.data.get("title") or "合成影片",
-            video=video_file,
-            video_format=video_format,
-        )
-        serializer = self.get_serializer(saved_video)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-
-class SavedVideoDelete(generics.DestroyAPIView):
-    serializer_class = SavedVideoSerializer
-    permission_classes = [AllowAny]
-
-    def get_queryset(self):
-        return SavedVideo.objects.filter(workspace_id=workspace_id(self.request))
 
 
 EDGE_TTS_VOICES = {

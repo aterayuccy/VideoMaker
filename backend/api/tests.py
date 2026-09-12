@@ -96,8 +96,8 @@ class SubtitleFormattingTests(TestCase):
 
         self.assertIn("PlayResX: 720", subtitle)
         self.assertIn("PlayResY: 1280", subtitle)
-        self.assertIn("Noto Sans CJK TC,36", subtitle)
-        self.assertIn(r"{\an8\pos(360,1070)}", subtitle)
+        self.assertIn("Noto Sans CJK TC,52", subtitle)
+        self.assertIn(r"{\an8\pos(360,1090)}", subtitle)
         self.assertIn("第一行 第二行", subtitle)
         self.assertEqual(format_ass_timestamp(61.25), "0:01:01.25")
 
@@ -194,6 +194,10 @@ class FfmpegRenderingTests(SimpleTestCase):
 
 
 class RemovedFeatureTests(TestCase):
+    def test_database_backed_pages_are_removed(self):
+        self.assertEqual(self.client.get("/api/notes/").status_code, 404)
+        self.assertEqual(self.client.get("/admin/").status_code, 404)
+
     def test_talking_material_endpoint_is_removed(self):
         self.assertEqual(self.client.post("/api/builtin-materials/").status_code, 404)
 

@@ -1,4 +1,3 @@
-from django.contrib import admin
 from django.urls import path,include
 from django.conf import settings
 from django.http import FileResponse, JsonResponse
@@ -6,7 +5,6 @@ from django.urls import re_path
 from django.views.static import serve as serve_media
 urlpatterns = [
     path("api/health/", lambda request: JsonResponse({"status": "ok"}), name="health"),
-    path('admin/', admin.site.urls),
     path("api/",include("api.urls"))
 ]
 
