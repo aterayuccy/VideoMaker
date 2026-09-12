@@ -1,12 +1,21 @@
 from io import BytesIO
 import json
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.test import RequestFactory, SimpleTestCase, TestCase
 
-from .views import build_subtitle_cues, download_file, split_subtitle_pages
+from .views import (
+    build_subtitle_cues,
+    download_file,
+    find_ffmpeg_executable,
+    format_srt_timestamp,
+    render_video_segment,
+    split_subtitle_pages,
+    write_subtitle_file,
+)
 
 
 class SubtitleFormattingTests(TestCase):
@@ -56,6 +65,20 @@ class SubtitleFormattingTests(TestCase):
         self.assertAlmostEqual(cues[-1]["start"] + cues[-1]["duration"], 8.0)
         self.assertTrue(all(cue["duration"] > 0 for cue in cues))
 
+    def test_writes_valid_srt_timestamps_and_complete_text(self):
+        with TemporaryDirectory() as temp_dir:
+            subtitle_path = Path(temp_dir) / "subtitle.srt"
+            write_subtitle_file("第一句，第二句。", 3.25, 80, subtitle_path)
+            subtitle = subtitle_path.read_text(encoding="utf-8")
+
+        self.assertIn("00:00:00,000 -->", subtitle)
+        self.assertIn("00:00:03,250", subtitle)
+        self.assertEqual(format_srt_timestamp(3661.007), "01:01:01,007")
+        self.assertEqual(
+            "".join(line for line in subtitle.splitlines() if not line.isdigit() and "-->" not in line),
+            "第一句，第二句。",
+        )
+
 
 class DownloadFileTests(SimpleTestCase):
     @patch("api.views.urlopen")
@@ -81,6 +104,67 @@ class DownloadFileTests(SimpleTestCase):
             self.assertEqual(target_path.read_bytes(), b"video")
             self.assertEqual(urlopen_mock.call_count, 2)
             sleep_mock.assert_called_once_with(1)
+
+
+class FfmpegRenderingTests(SimpleTestCase):
+    def test_renders_video_audio_and_subtitles_without_moviepy(self):
+        ffmpeg = find_ffmpeg_executable()
+        if not ffmpeg:
+            self.skipTest("FFmpeg is unavailable")
+
+        with TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "source.mp4"
+            audio_path = temp_path / "voice.wav"
+            subtitle_path = temp_path / "subtitle.srt"
+            output_path = temp_path / "result.mp4"
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=blue:s=320x180:r=24:d=1",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(video_path),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    str(audio_path),
+                ],
+                check=True,
+            )
+            subtitle_path.write_text(
+                "1\n00:00:00,000 --> 00:00:00,800\n測試字幕\n",
+                encoding="utf-8",
+            )
+
+            render_video_segment(
+                video_path,
+                audio_path,
+                subtitle_path,
+                output_path,
+                (320, 180),
+                0.8,
+            )
+
+            self.assertGreater(output_path.stat().st_size, 0)
 
 
 class RemovedFeatureTests(TestCase):

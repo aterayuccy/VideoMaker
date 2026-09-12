@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.core.files.storage import default_storage
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser
@@ -162,6 +162,92 @@ def concatenate_rendered_video_segments(segment_paths, output_path):
         raise RuntimeError("影片片段串接失敗，請稍後再試。")
 
     return output_path
+
+
+def format_srt_timestamp(seconds):
+    milliseconds = max(0, round(float(seconds) * 1000))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02}:{minutes:02}:{whole_seconds:02},{milliseconds:03}"
+
+
+def write_subtitle_file(text, duration, max_line_width, target_path):
+    cues = build_subtitle_cues(text, duration, max_line_width)
+    blocks = []
+
+    for index, cue in enumerate(cues, start=1):
+        start = cue["start"]
+        end = start + cue["duration"]
+        blocks.append(
+            f"{index}\n{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}\n{cue['text']}"
+        )
+
+    target_path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+
+
+def render_video_segment(video_path, audio_path, subtitle_path, output_path, target_size, duration):
+    ffmpeg_executable = find_ffmpeg_executable()
+
+    if not ffmpeg_executable:
+        raise RuntimeError("伺服器尚未安裝 FFmpeg。")
+
+    width, height = target_size
+    escaped_subtitle_path = (
+        subtitle_path.as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    )
+    subtitle_margin = 100 if height > width else 70
+    video_filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,fps=24,"
+        f"subtitles='{escaped_subtitle_path}':"
+        "force_style='FontName=Noto Sans CJK TC,FontSize=30,"
+        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+        f"BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={subtitle_margin}'"
+    )
+    command = [
+        ffmpeg_executable,
+        "-y",
+        "-loglevel",
+        "error",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-i",
+        str(video_path),
+        "-i",
+        str(audio_path),
+        "-t",
+        f"{duration:.3f}",
+        "-vf",
+        video_filter,
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "28",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-movflags",
+        "+faststart",
+        "-shortest",
+        str(output_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=900, check=False)
+
+    if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size == 0:
+        logger.error("FFmpeg segment render failed: %s", result.stderr[-4000:])
+        raise RuntimeError("影片片段轉檔失敗，請更換素材後再試。")
 
 
 def workspace_id(request):
@@ -571,23 +657,6 @@ def draw_builtin_object(draw, width, height, object_id, position, time):
         draw.ellipse((x - size // 10, y - int(size * 0.2), x + size // 10, y), fill="#facc15")
 
 
-def create_builtin_video_clip(target_size, duration, scene_id, object_id, position):
-    from PIL import Image, ImageDraw
-    import numpy as np
-    from moviepy import VideoClip
-
-    width, height = target_size
-
-    def make_frame(time):
-        image = Image.new("RGB", (width, height), "#e2e8f0")
-        draw = ImageDraw.Draw(image)
-        draw_builtin_scene(draw, width, height, scene_id)
-        draw_builtin_object(draw, width, height, object_id, position, time)
-        return np.asarray(image)
-
-    return VideoClip(frame_function=make_frame, duration=duration)
-
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def tts_voices(request):
@@ -749,133 +818,52 @@ def compose_video(request):
         if not segment.get("videoUrl"):
             return Response({"detail": f"片段 {index} 尚未選擇素材。"}, status=status.HTTP_400_BAD_REQUEST)
 
+    temp_dir = tempfile.TemporaryDirectory()
     try:
-        from moviepy import (
-            AudioFileClip,
-            CompositeVideoClip,
-            TextClip,
-            VideoFileClip,
-        )
-    except ImportError:
-        return Response(
-            {"detail": "後端尚未安裝 MoviePy，請先安裝 requirements.txt。"},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
+        temp_path = Path(temp_dir.name)
+        segment_output_paths = []
 
-    try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            segment_output_paths = []
-            resources = []
+        for index, segment in enumerate(segments, start=1):
+            text = segment.get("text", "").strip()
+            clip_duration = float(segment.get("duration") or 0)
 
-            try:
-                for index, segment in enumerate(segments, start=1):
-                    text = segment.get("text", "").strip()
-                    audio_path = temp_path / f"audio_{index}.mp3"
+            if clip_duration <= 0 or clip_duration > 600:
+                raise RuntimeError(f"片段 {index} 的音檔長度無效。")
 
-                    audio_path.write_bytes(asyncio.run(synthesize_tts_audio(text, voice)))
-                    audio_clip = AudioFileClip(str(audio_path))
-                    target_size = video_settings["size"]
+            audio_path = temp_path / f"audio_{index}.mp3"
+            video_path = temp_path / f"video_{index}_external"
+            subtitle_path = temp_path / f"subtitle_{index}.srt"
+            segment_output_path = temp_path / f"rendered_segment_{index}.mp4"
 
-                    video_path = temp_path / f"video_{index}_external"
-                    download_file(segment["videoUrl"], video_path, request=request)
-                    video_clip = VideoFileClip(str(video_path))
+            audio_path.write_bytes(asyncio.run(synthesize_tts_audio(text, voice)))
+            download_file(segment["videoUrl"], video_path, request=request)
+            write_subtitle_file(
+                text,
+                clip_duration,
+                video_settings["subtitle_width"],
+                subtitle_path,
+            )
+            render_video_segment(
+                video_path,
+                audio_path,
+                subtitle_path,
+                segment_output_path,
+                video_settings["size"],
+                clip_duration,
+            )
+            segment_output_paths.append(segment_output_path)
 
-                    fitted_video_clip, fitted_resources = fit_video_clip_to_canvas(video_clip, target_size)
-
-                    clip_duration = min(audio_clip.duration, video_clip.duration)
-                    base_material_clip = fitted_video_clip
-
-                    base_clip = base_material_clip.subclipped(0, clip_duration).with_audio(
-                        audio_clip.subclipped(0, clip_duration)
-                    )
-                    subtitle_text_clips = []
-                    subtitle_clips = []
-
-                    for cue in build_subtitle_cues(
-                        text,
-                        clip_duration,
-                        video_settings["subtitle_width"],
-                    ):
-                        subtitle_text_clip = TextClip(
-                            font=str(SUBTITLE_FONT_PATH) if SUBTITLE_FONT_PATH.exists() else None,
-                            text=cue["text"],
-                            font_size=SUBTITLE_FONT_SIZE,
-                            size=(video_settings["subtitle_width"], None),
-                            color="white",
-                            stroke_color="black",
-                            stroke_width=SUBTITLE_STROKE_WIDTH,
-                            method="caption",
-                            margin=(SUBTITLE_HORIZONTAL_MARGIN, SUBTITLE_VERTICAL_MARGIN),
-                            text_align="center",
-                            duration=cue["duration"],
-                        )
-                        subtitle_clip = (
-                            subtitle_text_clip
-                            .with_start(cue["start"])
-                            .with_position(("center", video_settings["subtitle_top"]))
-                        )
-                        subtitle_text_clips.append(subtitle_text_clip)
-                        subtitle_clips.append(subtitle_clip)
-
-                    clip = (
-                        CompositeVideoClip([base_clip, *subtitle_clips], size=target_size)
-                        .with_audio(base_clip.audio)
-                        .with_duration(clip_duration)
-                    )
-                    video_resources = [video_clip, *fitted_resources]
-
-                    if fitted_video_clip is not video_clip:
-                        video_resources.append(fitted_video_clip)
-
-                    resources.extend(
-                        [
-                            audio_clip,
-                            *video_resources,
-                            base_clip,
-                            *subtitle_text_clips,
-                            *subtitle_clips,
-                            clip,
-                        ]
-                    )
-
-                    segment_output_path = temp_path / f"rendered_segment_{index}.mp4"
-                    clip.write_videofile(
-                        str(segment_output_path),
-                        codec="libx264",
-                        audio_codec="aac",
-                        audio_fps=44100,
-                        fps=24,
-                        preset="veryfast",
-                        threads=1,
-                        ffmpeg_params=["-movflags", "+faststart"],
-                        logger=None,
-                    )
-                    segment_output_paths.append(segment_output_path)
-                    close_media_resources(resources)
-
-                output_path = temp_path / f"result_{uuid.uuid4().hex}.mp4"
-                concatenate_rendered_video_segments(
-                    segment_output_paths,
-                    output_path,
-                )
-
-                output_bytes = output_path.read_bytes()
-            finally:
-                close_media_resources(resources)
+        output_path = temp_path / f"result_{uuid.uuid4().hex}.mp4"
+        concatenate_rendered_video_segments(segment_output_paths, output_path)
     except Exception as error:
-        error_text = str(error)
-
-        if "Duration: N/A" in error_text or "Error passing `ffmpeg -i`" in error_text:
-            detail = "手機產生的素材缺少影片時長，請重新選擇場景後再試。"
-        else:
-            detail = error_text
-
+        temp_dir.cleanup()
         return Response(
-            {"detail": f"影片合成失敗：{detail}"},
+            {"detail": f"影片合成失敗：{error}"},
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    response = HttpResponse(output_bytes, content_type="video/mp4")
+    response = FileResponse(output_path.open("rb"), content_type="video/mp4")
+    response._resource_closers.append(temp_dir.cleanup)
     response["Content-Disposition"] = 'inline; filename="composed-video.mp4"'
+    response["Content-Length"] = str(output_path.stat().st_size)
     return response
