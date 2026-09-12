@@ -64,6 +64,7 @@ function Home() {
   const [segmentCount, setSegmentCount] = useState(1);
   const [segments, setSegments] = useState([createEmptySegment()]);
   const [composeStatus, setComposeStatus] = useState('idle');
+  const [composeProgress, setComposeProgress] = useState(0);
   const [composeError, setComposeError] = useState('');
   const [resultVideoUrl, setResultVideoUrl] = useState('');
   const [workflowStep, setWorkflowStep] = useState(1);
@@ -148,6 +149,21 @@ function Home() {
   }, [resultVideoUrl]);
 
   useEffect(() => {
+    if (composeStatus !== 'composing') return undefined;
+
+    const progressTimer = window.setInterval(() => {
+      setComposeProgress((currentProgress) => {
+        if (currentProgress < 35) return Math.min(35, currentProgress + 2);
+        if (currentProgress < 70) return Math.min(70, currentProgress + 1);
+        if (currentProgress < 92) return Math.min(92, currentProgress + 0.5);
+        return currentProgress;
+      });
+    }, 450);
+
+    return () => window.clearInterval(progressTimer);
+  }, [composeStatus]);
+
+  useEffect(() => {
     return () => {
       segmentsRef.current.forEach((segment) => {
         if (segment.audioUrl) URL.revokeObjectURL(segment.audioUrl);
@@ -166,6 +182,7 @@ function Home() {
 
     setResultVideoUrl('');
     setComposeStatus('idle');
+    setComposeProgress(0);
     setComposeError('');
   };
 
@@ -390,7 +407,6 @@ function Home() {
   };
 
   const composeVideo = async () => {
-    setComposeStatus('composing');
     setComposeError('');
 
     const invalidSegmentIndex = segments.findIndex(
@@ -405,6 +421,9 @@ function Home() {
       setComposeError(`片段 ${invalidSegmentIndex + 1} 需要先生成音檔並選擇素材。`);
       return;
     }
+
+    setComposeProgress(3);
+    setComposeStatus('composing');
 
     try {
       const res = await api.post(
@@ -428,6 +447,7 @@ function Home() {
       }
 
       setResultVideoUrl(videoUrl);
+      setComposeProgress(100);
       setComposeStatus('ready');
     } catch (error) {
       let errorMessage = '影片合成失敗，請稍後再試。';
@@ -445,6 +465,7 @@ function Home() {
       }
 
       setComposeStatus('idle');
+      setComposeProgress(0);
       setComposeError(errorMessage);
     }
   };
@@ -736,6 +757,30 @@ function Home() {
                   ? '正在準備音檔或素材，完成後即可合成。'
                   : '請先完成每個片段的音檔與素材。'}
               </p>
+            )}
+            {(composeStatus === 'composing' || composeStatus === 'ready') && (
+              <div className={`compose-progress compose-progress--${composeStatus}`}>
+                <div className="compose-progress-heading">
+                  <span>{composeStatus === 'ready' ? '合成完成' : '影片合成中'}</span>
+                  <strong>{Math.round(composeProgress)}%</strong>
+                </div>
+                <div
+                  className="compose-progress-track"
+                  role="progressbar"
+                  aria-label="影片合成進度"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow={Math.round(composeProgress)}
+                >
+                  <span
+                    className="compose-progress-fill"
+                    style={{ width: `${composeProgress}%` }}
+                  />
+                </div>
+                {composeStatus === 'composing' && (
+                  <p>正在下載素材、加入字幕並輸出影片，請保持此頁開啟。</p>
+                )}
+              </div>
             )}
             {composeError && <p className="segment-error">{composeError}</p>}
             {resultVideoUrl && (
