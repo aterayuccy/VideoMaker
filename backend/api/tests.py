@@ -193,7 +193,7 @@ class BuiltinMaterialUploadTests(TestCase):
             username="mobile-user",
             password="StrongPass123",
         )
-        self.client.force_authenticate(self.user)
+        self.client.credentials(HTTP_X_WORKSPACE_ID="bcdebbad-1234-4234-8234-123456789abc")
 
     def test_accepts_fallback_image_when_mobile_video_is_unavailable(self):
         fallback_image = SimpleUploadedFile(
