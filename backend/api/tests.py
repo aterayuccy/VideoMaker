@@ -11,9 +11,11 @@ from .views import (
     build_subtitle_cues,
     download_file,
     find_ffmpeg_executable,
+    format_ass_timestamp,
     format_srt_timestamp,
     render_video_segment,
     split_subtitle_pages,
+    write_ass_subtitle_file,
     write_subtitle_file,
 )
 
@@ -79,6 +81,26 @@ class SubtitleFormattingTests(TestCase):
             "第一句，第二句。",
         )
 
+    def test_ass_subtitles_restore_original_size_and_position(self):
+        with TemporaryDirectory() as temp_dir:
+            subtitle_path = Path(temp_dir) / "subtitle.ass"
+            write_ass_subtitle_file(
+                "第一行\n第二行",
+                2.0,
+                640,
+                subtitle_path,
+                (720, 1280),
+                1070,
+            )
+            subtitle = subtitle_path.read_text(encoding="utf-8-sig")
+
+        self.assertIn("PlayResX: 720", subtitle)
+        self.assertIn("PlayResY: 1280", subtitle)
+        self.assertIn("Noto Sans CJK TC,36", subtitle)
+        self.assertIn(r"{\an8\pos(360,1070)}", subtitle)
+        self.assertIn("第一行 第二行", subtitle)
+        self.assertEqual(format_ass_timestamp(61.25), "0:01:01.25")
+
 
 class DownloadFileTests(SimpleTestCase):
     @patch("api.views.urlopen")
@@ -116,7 +138,7 @@ class FfmpegRenderingTests(SimpleTestCase):
             temp_path = Path(temp_dir)
             video_path = temp_path / "source.mp4"
             audio_path = temp_path / "voice.wav"
-            subtitle_path = temp_path / "subtitle.srt"
+            subtitle_path = temp_path / "subtitle.ass"
             output_path = temp_path / "result.mp4"
             subprocess.run(
                 [
@@ -150,9 +172,13 @@ class FfmpegRenderingTests(SimpleTestCase):
                 ],
                 check=True,
             )
-            subtitle_path.write_text(
-                "1\n00:00:00,000 --> 00:00:00,800\n測試字幕\n",
-                encoding="utf-8",
+            write_ass_subtitle_file(
+                "測試字幕",
+                0.8,
+                260,
+                subtitle_path,
+                (320, 180),
+                130,
             )
 
             render_video_segment(

@@ -625,15 +625,18 @@ function Home() {
                       onTimeUpdate={(event) => handleMaterialTimeUpdate(event, segment.material.trimEnd)}
                     />
                     <div className="material-browser-controls">
-                      <button
-                        type="button"
-                        className="material-arrow-button"
-                        onClick={() => browseMaterial(index, -1)}
-                        disabled={segment.materialIndex <= 0 || segment.materialStatus === 'searching'}
-                        aria-label="上一個素材"
-                      >
-                        ←
-                      </button>
+                      {segment.materialIndex > 0 ? (
+                        <button
+                          type="button"
+                          className="material-arrow-button"
+                          onClick={() => browseMaterial(index, -1)}
+                          disabled={segment.materialStatus === 'searching'}
+                        >
+                          上一頁
+                        </button>
+                      ) : (
+                        <span className="material-arrow-placeholder" aria-hidden="true" />
+                      )}
                       <span aria-live="polite">
                         素材 {segment.materialIndex + 1}
                       </span>
@@ -642,9 +645,8 @@ function Home() {
                         className="material-arrow-button"
                         onClick={() => browseMaterial(index, 1)}
                         disabled={segment.materialStatus === 'searching'}
-                        aria-label="下一個素材"
                       >
-                        →
+                        下一頁
                       </button>
                     </div>
                   </div>

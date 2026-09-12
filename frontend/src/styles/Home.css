@@ -243,7 +243,7 @@
 
 .material-browser-controls {
   display: grid;
-  grid-template-columns: 52px auto 52px;
+  grid-template-columns: 92px auto 92px;
   justify-content: center;
   align-items: center;
   gap: 14px;
@@ -255,12 +255,16 @@
 
 .task-form .material-arrow-button {
   min-height: 44px;
-  padding: 0;
+  padding: 0 12px;
   border: 1px solid #cbd5e1;
   background: #ffffff;
   color: #4c1d95;
-  font-size: 24px;
+  font-size: 15px;
   line-height: 1;
+}
+
+.material-arrow-placeholder {
+  width: 92px;
 }
 
 .task-form .material-arrow-button:hover:not(:disabled) {

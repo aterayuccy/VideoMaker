@@ -186,6 +186,57 @@ def write_subtitle_file(text, duration, max_line_width, target_path):
     target_path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
 
 
+def format_ass_timestamp(seconds):
+    centiseconds = max(0, round(float(seconds) * 100))
+    hours, remainder = divmod(centiseconds, 360_000)
+    minutes, remainder = divmod(remainder, 6_000)
+    whole_seconds, centiseconds = divmod(remainder, 100)
+    return f"{hours}:{minutes:02}:{whole_seconds:02}.{centiseconds:02}"
+
+
+def write_ass_subtitle_file(text, duration, max_line_width, target_path, target_size, subtitle_top):
+    width, height = target_size
+    dialogues = []
+
+    for cue in build_subtitle_cues(text, duration, max_line_width):
+        start = cue["start"]
+        end = start + cue["duration"]
+        cue_text = (
+            cue["text"]
+            .replace("\\", "\\\\")
+            .replace("{", "\\{")
+            .replace("}", "\\}")
+            .replace("\n", "\\N")
+        )
+        positioned_text = f"{{\\an8\\pos({width // 2},{subtitle_top})}}{cue_text}"
+        dialogues.append(
+            "Dialogue: 0,"
+            f"{format_ass_timestamp(start)},{format_ass_timestamp(end)},"
+            f"Default,,0,0,0,,{positioned_text}"
+        )
+
+    ass_document = "\n".join(
+        [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            f"PlayResX: {width}",
+            f"PlayResY: {height}",
+            "WrapStyle: 2",
+            "ScaledBorderAndShadow: yes",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            "Style: Default,Noto Sans CJK TC,36,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,8,24,24,0,1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+            *dialogues,
+            "",
+        ]
+    )
+    target_path.write_text(ass_document, encoding="utf-8-sig")
+
+
 def render_video_segment(video_path, audio_path, subtitle_path, output_path, target_size, duration):
     ffmpeg_executable = find_ffmpeg_executable()
 
@@ -196,14 +247,10 @@ def render_video_segment(video_path, audio_path, subtitle_path, output_path, tar
     escaped_subtitle_path = (
         subtitle_path.as_posix().replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
     )
-    subtitle_margin = 100 if height > width else 70
     video_filter = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},setsar=1,fps=24,"
-        f"subtitles='{escaped_subtitle_path}':"
-        "force_style='FontName=Noto Sans CJK TC,FontSize=30,"
-        "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-        f"BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginV={subtitle_margin}'"
+        f"subtitles='{escaped_subtitle_path}'"
     )
     command = [
         ffmpeg_executable,
@@ -832,16 +879,18 @@ def compose_video(request):
 
             audio_path = temp_path / f"audio_{index}.mp3"
             video_path = temp_path / f"video_{index}_external"
-            subtitle_path = temp_path / f"subtitle_{index}.srt"
+            subtitle_path = temp_path / f"subtitle_{index}.ass"
             segment_output_path = temp_path / f"rendered_segment_{index}.mp4"
 
             audio_path.write_bytes(asyncio.run(synthesize_tts_audio(text, voice)))
             download_file(segment["videoUrl"], video_path, request=request)
-            write_subtitle_file(
+            write_ass_subtitle_file(
                 text,
                 clip_duration,
                 video_settings["subtitle_width"],
                 subtitle_path,
+                video_settings["size"],
+                video_settings["subtitle_top"],
             )
             render_video_segment(
                 video_path,
