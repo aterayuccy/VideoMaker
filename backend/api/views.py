@@ -60,6 +60,8 @@ SUBTITLE_STROKE_WIDTH = 3
 VIDEO_DOWNLOAD_TIMEOUT = int(os.getenv("VIDEO_DOWNLOAD_TIMEOUT", "180"))
 VIDEO_DOWNLOAD_RETRIES = int(os.getenv("VIDEO_DOWNLOAD_RETRIES", "3"))
 VIDEO_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+PIXABAY_RESULTS_PER_PAGE = 30
+PIXABAY_RESPONSE_LIMIT = 4 * 1024 * 1024
 
 
 def find_ffmpeg_executable():
@@ -657,7 +659,7 @@ def search_pixabay_video(request):
             "video_type": "film",
             "safesearch": "true",
             "order": "popular",
-            "per_page": 200,
+            "per_page": PIXABAY_RESULTS_PER_PAGE,
         }
     )
     pixabay_url = f"https://pixabay.com/api/videos/?{params}"
@@ -666,7 +668,15 @@ def search_pixabay_video(request):
         pixabay_request = Request(pixabay_url, headers={"User-Agent": "videomaker/1.0"})
 
         with urlopen(pixabay_request, timeout=12) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            response_body = response.read(PIXABAY_RESPONSE_LIMIT + 1)
+
+        if len(response_body) > PIXABAY_RESPONSE_LIMIT:
+            return Response(
+                {"detail": "Pixabay 回傳的素材資料過大，請縮小搜尋範圍。"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        data = json.loads(response_body.decode("utf-8"))
     except HTTPError as error:
         detail = error.read().decode("utf-8") or "Pixabay 搜尋失敗。"
         return Response({"detail": detail}, status=error.code)

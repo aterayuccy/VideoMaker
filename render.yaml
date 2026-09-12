@@ -19,6 +19,10 @@ services:
         value: sqlite
       - key: WEB_CONCURRENCY
         value: "1"
+      - key: GUNICORN_THREADS
+        value: "2"
+      - key: GUNICORN_MAX_REQUESTS
+        value: "40"
       - key: GUNICORN_TIMEOUT
         value: "900"
       - key: OMP_NUM_THREADS
