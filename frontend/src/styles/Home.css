@@ -39,6 +39,45 @@
   font-weight: 800;
 }
 
+.workflow-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.workflow-heading .workflow-step-label {
+  margin: 0;
+}
+
+.server-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  margin: 0;
+  color: #92400e;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.server-status--ready {
+  color: #047857;
+}
+
+.server-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.server-status--ready .server-status-dot {
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
+}
+
 
 .task-form label {
   color: #263244;
@@ -369,6 +408,12 @@
   .settings-panel,
   .work-panel {
     padding: 16px;
+  }
+
+  .workflow-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
   }
 
   .segment-count-row {

@@ -53,6 +53,9 @@ const videoFormats = [
   { id: 'long', name: '長影片' },
 ];
 
+const SERVER_RETRY_DELAY = 3000;
+const SERVER_KEEP_WARM_INTERVAL = 10 * 60 * 1000;
+
 function Home() {
   const [voice, setVoice] = useState(fallbackVoices[0].id);
   const [videoFormat, setVideoFormat] = useState('short');
@@ -64,8 +67,47 @@ function Home() {
   const [composeError, setComposeError] = useState('');
   const [resultVideoUrl, setResultVideoUrl] = useState('');
   const [workflowStep, setWorkflowStep] = useState(1);
+  const [serverStatus, setServerStatus] = useState('checking');
   const segmentsRef = useRef(segments);
   const resultVideoUrlRef = useRef(resultVideoUrl);
+
+  useEffect(() => {
+    let retryTimer;
+    let keepWarmTimer;
+    let cancelled = false;
+
+    const checkServer = async () => {
+      try {
+        const response = await api.get('/api/health/', { timeout: 10000 });
+        if (response.data?.status !== 'ok') throw new Error('Server is not ready');
+        if (!cancelled) setServerStatus('ready');
+      } catch {
+        if (cancelled) return;
+        setServerStatus('retrying');
+        retryTimer = window.setTimeout(checkServer, SERVER_RETRY_DELAY);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        window.clearTimeout(retryTimer);
+        checkServer();
+      }
+    };
+
+    checkServer();
+    keepWarmTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') checkServer();
+    }, SERVER_KEEP_WARM_INTERVAL);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+      window.clearInterval(keepWarmTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
 
   useEffect(() => {
     api
@@ -472,7 +514,17 @@ function Home() {
     <main className="workspace-page">
       <section className="task-form">
         {workflowStep === 1 && <aside className="settings-panel">
-          <p className="workflow-step-label">步驟 1 / 2 · 基本設定</p>
+          <div className="workflow-heading">
+            <p className="workflow-step-label">步驟 1 / 2 · 基本設定</p>
+            <p
+              className={`server-status server-status--${serverStatus}`}
+              role="status"
+              aria-live="polite"
+            >
+              <span className="server-status-dot" aria-hidden="true" />
+              {serverStatus === 'ready' ? '伺服器已就緒' : '伺服器準備中…'}
+            </p>
+          </div>
           <label htmlFor="voice">選擇聲音</label>
           <select
             id="voice"
