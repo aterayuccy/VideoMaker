@@ -43,8 +43,6 @@ VIDEO_FORMATS = {
         "subtitle_width": 1120,
     },
 }
-BUILTIN_SCENE_IDS = {"classroom", "bedroom", "garden", "beach", "cafe", "forest", "rooftop", "studio"}
-BUILTIN_OBJECT_IDS = {"cat", "tree", "balloon", "fish", "rocket", "lamp", "cloud", "flower"}
 TARGET_VIDEO_SIZE = VIDEO_FORMATS["long"]["size"]
 SUBTITLE_FONT_PATH = Path(
     os.getenv(
@@ -64,10 +62,6 @@ VIDEO_DOWNLOAD_RETRIES = int(os.getenv("VIDEO_DOWNLOAD_RETRIES", "3"))
 VIDEO_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
-class BuiltinMaterialPreparationError(RuntimeError):
-    pass
-
-
 def find_ffmpeg_executable():
     ffmpeg_executable = shutil.which("ffmpeg")
 
@@ -81,68 +75,6 @@ def find_ffmpeg_executable():
 
     bundled_executable = get_ffmpeg_exe()
     return bundled_executable if Path(bundled_executable).exists() else None
-
-
-def normalize_builtin_material_video(source_path, output_path):
-    ffmpeg_executable = find_ffmpeg_executable()
-
-    if not ffmpeg_executable:
-        raise BuiltinMaterialPreparationError(
-            "伺服器暫時無法處理手機產生的說話畫面，請稍後再試。"
-        )
-
-    command = [
-        ffmpeg_executable,
-        "-y",
-        "-loglevel",
-        "error",
-        "-fflags",
-        "+genpts",
-        "-err_detect",
-        "ignore_err",
-        "-i",
-        str(source_path),
-        "-map",
-        "0:v:0",
-        "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        "-r",
-        "30",
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ]
-
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise BuiltinMaterialPreparationError(
-            "手機產生的說話畫面轉換逾時，請重新選擇場景後再試。"
-        ) from error
-
-    if (
-        result.returncode != 0
-        or not output_path.exists()
-        or output_path.stat().st_size == 0
-    ):
-        raise BuiltinMaterialPreparationError(
-            "手機產生的說話畫面格式無法讀取，請重新選擇場景後再試。"
-        )
-
-    return output_path
 
 
 def close_media_resources(resources):
@@ -780,50 +712,6 @@ def search_pixabay_video(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
-@parser_classes([MultiPartParser])
-def upload_builtin_material(request):
-    video_file = request.FILES.get("video")
-    fallback_image = request.FILES.get("fallback_image")
-
-    if not video_file and not fallback_image:
-        return Response(
-            {"detail": "請上傳內建素材影片或備援畫面。"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if video_file and video_file.size > 20 * 1024 * 1024:
-        return Response({"detail": "內建素材影片不可超過 20 MB。"}, status=status.HTTP_400_BAD_REQUEST)
-
-    if fallback_image and fallback_image.size > 5 * 1024 * 1024:
-        return Response({"detail": "備援畫面不可超過 5 MB。"}, status=status.HTTP_400_BAD_REQUEST)
-
-    response_data = {"videoUrl": "", "fallbackImageUrl": ""}
-
-    if video_file:
-        video_content_type = (video_file.content_type or "").lower()
-        video_suffix = ".mp4" if "mp4" in video_content_type else ".webm"
-        video_storage_name = default_storage.save(
-            f"builtin_materials/{workspace_id(request)}/{uuid.uuid4().hex}{video_suffix}",
-            video_file,
-        )
-        video_media_path = f"{settings.MEDIA_URL.rstrip('/')}/{video_storage_name}"
-        response_data["videoUrl"] = request.build_absolute_uri(video_media_path)
-
-    if fallback_image:
-        image_content_type = (fallback_image.content_type or "").lower()
-        image_suffix = ".png" if "png" in image_content_type else ".jpg"
-        image_storage_name = default_storage.save(
-            f"builtin_materials/{workspace_id(request)}/{uuid.uuid4().hex}{image_suffix}",
-            fallback_image,
-        )
-        image_media_path = f"{settings.MEDIA_URL.rstrip('/')}/{image_storage_name}"
-        response_data["fallbackImageUrl"] = request.build_absolute_uri(image_media_path)
-
-    return Response(response_data)
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
 def compose_video(request):
     voice = request.data.get("voice", "zh-TW-HsiaoChenNeural")
     video_format = request.data.get("video_format", "long")
@@ -845,30 +733,18 @@ def compose_video(request):
 
         material_type = segment.get("materialType", "external")
 
-        if material_type not in {"external", "builtin"}:
+        if material_type != "external":
             return Response({"detail": f"片段 {index} 的素材類型無效。"}, status=status.HTTP_400_BAD_REQUEST)
 
-        if material_type == "builtin":
-            if segment.get("builtinScene") not in BUILTIN_SCENE_IDS:
-                return Response({"detail": f"片段 {index} 尚未選擇內建場景。"}, status=status.HTTP_400_BAD_REQUEST)
-
-        if material_type == "builtin":
-            if not segment.get("videoUrl") and not segment.get("fallbackImageUrl"):
-                return Response(
-                    {"detail": f"片段 {index} 尚未準備說話畫面。"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        elif not segment.get("videoUrl"):
+        if not segment.get("videoUrl"):
             return Response({"detail": f"片段 {index} 尚未選擇素材。"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         from moviepy import (
             AudioFileClip,
             CompositeVideoClip,
-            ImageClip,
             TextClip,
             VideoFileClip,
-            concatenate_videoclips,
         )
     except ImportError:
         return Response(
@@ -885,78 +761,20 @@ def compose_video(request):
             try:
                 for index, segment in enumerate(segments, start=1):
                     text = segment.get("text", "").strip()
-                    material_type = segment.get("materialType", "external")
                     audio_path = temp_path / f"audio_{index}.mp3"
 
                     audio_path.write_bytes(asyncio.run(synthesize_tts_audio(text, voice)))
                     audio_clip = AudioFileClip(str(audio_path))
                     target_size = video_settings["size"]
 
-                    if material_type == "builtin":
-                        video_clip = None
-                        video_error = None
-
-                        if segment.get("videoUrl"):
-                            try:
-                                video_path = temp_path / f"video_{index}_uploaded"
-                                normalized_video_path = temp_path / f"video_{index}_normalized.mp4"
-                                download_file(segment["videoUrl"], video_path, request=request)
-                                normalize_builtin_material_video(
-                                    video_path,
-                                    normalized_video_path,
-                                )
-                                video_clip = VideoFileClip(str(normalized_video_path))
-                            except Exception as error:
-                                video_error = error
-                                logger.warning(
-                                    "Built-in material video for segment %s was unreadable; "
-                                    "using its fallback image.",
-                                    index,
-                                    exc_info=True,
-                                )
-
-                        if video_clip is None:
-                            fallback_image_url = segment.get("fallbackImageUrl")
-
-                            if not fallback_image_url:
-                                if video_error:
-                                    raise video_error
-                                raise BuiltinMaterialPreparationError(
-                                    "說話畫面無法讀取，且沒有可用的備援畫面。"
-                                )
-
-                            fallback_image_path = temp_path / f"video_{index}_fallback"
-                            download_file(
-                                fallback_image_url,
-                                fallback_image_path,
-                                request=request,
-                            )
-                            video_clip = ImageClip(
-                                str(fallback_image_path),
-                                duration=audio_clip.duration,
-                            )
-                    else:
-                        video_path = temp_path / f"video_{index}_external"
-                        download_file(segment["videoUrl"], video_path, request=request)
-                        video_clip = VideoFileClip(str(video_path))
+                    video_path = temp_path / f"video_{index}_external"
+                    download_file(segment["videoUrl"], video_path, request=request)
+                    video_clip = VideoFileClip(str(video_path))
 
                     fitted_video_clip, fitted_resources = fit_video_clip_to_canvas(video_clip, target_size)
 
-                    if material_type == "builtin" and segment.get("loopMaterial"):
-                        if video_clip.duration <= 0:
-                            raise RuntimeError(f"片段 {index} 的內建素材影片無法播放。")
-
-                        clip_duration = audio_clip.duration
-                        loop_count = max(1, math.ceil(clip_duration / video_clip.duration))
-                        looped_material_clip = concatenate_videoclips(
-                            [fitted_video_clip] * loop_count,
-                            method="chain",
-                        ).subclipped(0, clip_duration)
-                        fitted_resources.append(looped_material_clip)
-                        base_material_clip = looped_material_clip
-                    else:
-                        clip_duration = min(audio_clip.duration, video_clip.duration)
-                        base_material_clip = fitted_video_clip
+                    clip_duration = min(audio_clip.duration, video_clip.duration)
+                    base_material_clip = fitted_video_clip
 
                     base_clip = base_material_clip.subclipped(0, clip_duration).with_audio(
                         audio_clip.subclipped(0, clip_duration)
@@ -1035,11 +853,6 @@ def compose_video(request):
                 output_bytes = output_path.read_bytes()
             finally:
                 close_media_resources(resources)
-    except BuiltinMaterialPreparationError as error:
-        return Response(
-            {"detail": f"影片合成失敗：{error}"},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
     except Exception as error:
         error_text = str(error)
 

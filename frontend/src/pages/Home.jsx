@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import api from '../api';
-import { BuiltInMaterialCanvas } from '../components/BuiltInMaterialCanvas';
-import { builtInCharacters, builtInScenes } from '../components/builtInMaterialOptions';
 import '../styles/Home.css';
 
 const fallbackVoices = [
@@ -13,35 +11,22 @@ const fallbackVoices = [
   { id: 'en-US-GuyNeural', name: 'Guy（英文男聲）' },
 ];
 
-const createEmptySegment = (builtinCharacter = '', builtinScene = '') => ({
+const createEmptySegment = () => ({
   text: '',
   status: 'idle',
   audioUrl: '',
   duration: 0,
   size: 0,
-  materialSource: 'builtin',
   keyword: '',
-  builtinCharacter,
-  builtinScene,
-  builtinCompositeKey: '',
   materialStatus: 'idle',
   material: null,
   materialIds: [],
+  materialHistory: [],
+  materialIndex: -1,
   showMaterial: false,
   error: '',
   materialError: '',
 });
-
-const getBuiltinCompositeKey = (segment, videoFormat) =>
-  `${segment.builtinCharacter}|${segment.builtinScene}|${videoFormat}`;
-
-const canSaveBuiltinMaterial = (segment, videoFormat) =>
-  Boolean(
-    segment.audioUrl &&
-    segment.builtinCharacter &&
-    segment.builtinScene &&
-    segment.builtinCompositeKey === getBuiltinCompositeKey(segment, videoFormat),
-  );
 
 const formatDuration = (seconds) => {
   if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
@@ -79,13 +64,8 @@ function Home() {
   const [composeError, setComposeError] = useState('');
   const [resultVideoUrl, setResultVideoUrl] = useState('');
   const [workflowStep, setWorkflowStep] = useState(1);
-  const [selectedBuiltinCharacter, setSelectedBuiltinCharacter] = useState('');
-  const [selectedBuiltinScene, setSelectedBuiltinScene] = useState('');
   const segmentsRef = useRef(segments);
   const resultVideoUrlRef = useRef(resultVideoUrl);
-  const talkingCompositeRef = useRef(null);
-  const builtinCanvasRefs = useRef({});
-  const builtinMaterialRequestRefs = useRef({});
 
   useEffect(() => {
     api
@@ -106,7 +86,7 @@ function Home() {
       const nextSegments = currentSegments.slice(0, segmentCount);
 
       while (nextSegments.length < segmentCount) {
-        nextSegments.push(createEmptySegment(selectedBuiltinCharacter, selectedBuiltinScene));
+        nextSegments.push(createEmptySegment());
       }
 
       currentSegments.slice(segmentCount).forEach((segment) => {
@@ -115,7 +95,7 @@ function Home() {
 
       return nextSegments;
     });
-  }, [segmentCount, selectedBuiltinCharacter, selectedBuiltinScene]);
+  }, [segmentCount]);
 
   useEffect(() => {
     segmentsRef.current = segments;
@@ -164,6 +144,8 @@ function Home() {
           materialStatus: 'idle',
           material: null,
           materialIds: [],
+          materialHistory: [],
+          materialIndex: -1,
           showMaterial: false,
           error: '',
           materialError: '',
@@ -183,245 +165,13 @@ function Home() {
               materialStatus: 'idle',
               material: null,
               materialIds: [],
+              materialHistory: [],
+              materialIndex: -1,
               showMaterial: false,
               materialError: '',
             }
           : segment,
       ),
-    );
-  };
-
-  const recordCanvasClip = (canvas, duration = 1.2) =>
-    new Promise((resolve, reject) => {
-      if (!canvas?.captureStream || !window.MediaRecorder) {
-        reject(new Error('此瀏覽器不支援 Canvas 素材錄製。'));
-        return;
-      }
-
-      const stream = canvas.captureStream(30);
-      const mimeType = [
-        'video/mp4;codecs=avc1.42E01E',
-        'video/mp4',
-        'video/webm;codecs=vp9',
-        'video/webm;codecs=vp8',
-        'video/webm',
-      ].find((type) => MediaRecorder.isTypeSupported(type));
-      const chunks = [];
-      const recorderOptions = { videoBitsPerSecond: 2500000 };
-      if (mimeType) recorderOptions.mimeType = mimeType;
-      const recorder = new MediaRecorder(stream, recorderOptions);
-      let settled = false;
-
-      const fail = (error) => {
-        if (settled) return;
-        settled = true;
-        stream.getTracks().forEach((track) => track.stop());
-        reject(error);
-      };
-
-      recorder.addEventListener('dataavailable', (event) => {
-        if (event.data.size > 0) chunks.push(event.data);
-      });
-      recorder.addEventListener('error', () => fail(new Error('Canvas 素材錄製失敗。')), { once: true });
-      recorder.addEventListener(
-        'stop',
-        () => {
-          if (settled) return;
-          settled = true;
-          stream.getTracks().forEach((track) => track.stop());
-          if (chunks.length === 0) {
-            reject(new Error('Canvas 素材沒有產生可用畫面。'));
-            return;
-          }
-          resolve(new Blob(chunks, { type: recorder.mimeType || mimeType || 'video/webm' }));
-        },
-        { once: true },
-      );
-
-      recorder.start(250);
-      window.setTimeout(() => {
-        if (recorder.state === 'recording') {
-          try {
-            recorder.requestData();
-          } catch {
-            // Some mobile implementations do not support requestData reliably.
-          }
-          recorder.stop();
-        }
-      }, Math.min(12000, Math.max(1200, duration * 1000)));
-    });
-
-  const captureCanvasFallback = (canvas) =>
-    new Promise((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error('無法建立說話畫面的備援影像。'));
-        },
-        'image/jpeg',
-        0.9,
-      );
-    });
-
-  const saveBuiltinMaterial = async (index, segment, requestId) => {
-    const composite = builtinCanvasRefs.current[index];
-    const canvas = composite?.canvas;
-
-    if (!canvas) {
-      updateSegmentState(index, { materialStatus: 'idle', materialError: '說話畫面預覽尚未準備好。' });
-      return;
-    }
-
-    updateSegmentState(index, { materialStatus: 'rendering', material: null, materialError: '' });
-
-    try {
-      const fallbackImage = await captureCanvasFallback(canvas);
-      let clip = null;
-
-      try {
-        clip = await recordCanvasClip(canvas, composite.duration);
-      } catch {
-        // A still fallback keeps composition working when a mobile browser
-        // emits an empty or timestamp-less MediaRecorder file.
-      }
-
-      if (builtinMaterialRequestRefs.current[index] !== requestId) return;
-
-      const formData = new FormData();
-      if (clip) {
-        const extension = clip.type.includes('mp4') ? 'mp4' : 'webm';
-        formData.append('video', clip, `builtin-material-${Date.now()}.${extension}`);
-      }
-      formData.append('fallback_image', fallbackImage, `builtin-material-${Date.now()}.jpg`);
-      const res = await api.post('/api/builtin-materials/', formData);
-
-      if (builtinMaterialRequestRefs.current[index] !== requestId) return;
-
-      updateSegmentState(index, {
-        materialStatus: 'ready',
-        material: {
-          type: 'builtin',
-          videoUrl: res.data.videoUrl || '',
-          fallbackImageUrl: res.data.fallbackImageUrl || '',
-          loop: true,
-        },
-        materialError: '',
-      });
-    } catch (error) {
-      if (builtinMaterialRequestRefs.current[index] !== requestId) return;
-
-      updateSegmentState(index, {
-        materialStatus: 'idle',
-        material: null,
-        materialError: error.response?.data?.detail || error.message || '說話畫面儲存失敗，請再試一次。',
-      });
-    }
-  };
-
-  const scheduleBuiltinMaterialSave = (index, segment) => {
-    if (!canSaveBuiltinMaterial(segment, videoFormat)) return;
-
-    const requestId = (builtinMaterialRequestRefs.current[index] || 0) + 1;
-    builtinMaterialRequestRefs.current[index] = requestId;
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => saveBuiltinMaterial(index, segment, requestId));
-    });
-  };
-
-  const updateMaterialSource = (index, materialSource) => {
-    const currentSegment = segmentsRef.current[index] || segments[index];
-    const hasOtherTalkingSegment = segmentsRef.current.some(
-      (segment, segmentIndex) => segmentIndex !== index && segment.materialSource === 'builtin',
-    );
-    if (materialSource === 'external' && !hasOtherTalkingSegment) {
-      talkingCompositeRef.current = null;
-    }
-    const composite = talkingCompositeRef.current;
-    const compositeReady = Boolean(
-      materialSource === 'builtin' &&
-      composite &&
-      composite.characterId === selectedBuiltinCharacter &&
-      composite.sceneId === selectedBuiltinScene &&
-      composite.videoFormat === videoFormat,
-    );
-    const nextSegment = {
-      ...currentSegment,
-      materialSource,
-      builtinCharacter: selectedBuiltinCharacter,
-      builtinScene: selectedBuiltinScene,
-      builtinCompositeKey: compositeReady
-        ? `${selectedBuiltinCharacter}|${selectedBuiltinScene}|${videoFormat}`
-        : '',
-      materialStatus: 'idle',
-      material: null,
-      showMaterial: false,
-      materialError: '',
-    };
-    const shouldSave = materialSource === 'builtin' && canSaveBuiltinMaterial(nextSegment, videoFormat);
-
-    resetResultVideo();
-    builtinMaterialRequestRefs.current[index] = (builtinMaterialRequestRefs.current[index] || 0) + 1;
-    builtinCanvasRefs.current[index] = compositeReady ? composite : null;
-    setSegments((currentSegments) =>
-      currentSegments.map((segment, segmentIndex) =>
-        segmentIndex === index
-          ? { ...nextSegment, materialStatus: shouldSave ? 'rendering' : 'idle' }
-          : segment,
-      ),
-    );
-
-    if (shouldSave) scheduleBuiltinMaterialSave(index, nextSegment);
-  };
-
-  const handleTalkingCompositeReady = (composite) => {
-    if (
-      composite.characterId !== selectedBuiltinCharacter ||
-      composite.sceneId !== selectedBuiltinScene ||
-      composite.videoFormat !== videoFormat
-    ) {
-      return;
-    }
-
-    talkingCompositeRef.current = composite;
-    setSegments((currentSegments) =>
-      currentSegments.map((segment, index) => {
-        if (segment.materialSource !== 'builtin') return segment;
-
-        builtinCanvasRefs.current[index] = composite;
-        return {
-          ...segment,
-          builtinCharacter: selectedBuiltinCharacter,
-          builtinScene: selectedBuiltinScene,
-          builtinCompositeKey: `${selectedBuiltinCharacter}|${selectedBuiltinScene}|${videoFormat}`,
-          materialStatus: segment.audioUrl ? 'rendering' : 'idle',
-          materialError: '',
-        };
-      }),
-    );
-
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        segmentsRef.current.forEach((segment, index) => {
-          if (segment.materialSource === 'builtin') scheduleBuiltinMaterialSave(index, segment);
-        });
-      });
-    });
-  };
-
-  const handleTalkingAnimationError = (error) => {
-    talkingCompositeRef.current = null;
-    setSegments((currentSegments) =>
-      currentSegments.map((segment, index) => {
-        if (segment.materialSource !== 'builtin') return segment;
-        builtinCanvasRefs.current[index] = null;
-        return {
-          ...segment,
-          builtinCompositeKey: '',
-          materialStatus: 'idle',
-          material: null,
-          materialError: error?.message || '角色動畫載入失敗。',
-        };
-      }),
     );
   };
 
@@ -459,25 +209,19 @@ function Home() {
       );
       const audioUrl = URL.createObjectURL(res.data);
       const duration = await getAudioDuration(audioUrl);
-      const latestSegment = segmentsRef.current[index] || segment;
-      const nextSegment = { ...latestSegment, audioUrl, duration };
-      const shouldSaveBuiltinMaterial =
-        nextSegment.materialSource === 'builtin' &&
-        canSaveBuiltinMaterial(nextSegment, videoFormat);
 
       updateSegmentState(index, {
         status: 'ready',
         audioUrl,
         duration,
         size: res.data.size,
-        materialStatus: shouldSaveBuiltinMaterial ? 'rendering' : 'idle',
+        materialStatus: 'idle',
         material: null,
         showMaterial: false,
         error: '',
         materialError: '',
       });
 
-      if (shouldSaveBuiltinMaterial) scheduleBuiltinMaterialSave(index, nextSegment);
     } catch (error) {
       let errorMessage = '音檔生成失敗，請稍後再試。';
 
@@ -513,10 +257,10 @@ function Home() {
     generateSegmentAudio(index);
   };
 
-  const searchMaterial = async (index, replace = false) => {
+  const searchMaterial = async (index) => {
     const segment = segments[index];
 
-    if (segment.material && !replace) {
+    if (segment.material) {
       updateSegmentState(index, { showMaterial: !segment.showMaterial, materialError: '' });
       return;
     }
@@ -545,6 +289,8 @@ function Home() {
         materialStatus: 'ready',
         material: res.data,
         materialIds: [...segment.materialIds, res.data.id],
+        materialHistory: [res.data],
+        materialIndex: 0,
         showMaterial: true,
         materialError: '',
       });
@@ -552,6 +298,51 @@ function Home() {
       updateSegmentState(index, {
         materialStatus: 'idle',
         materialError: error.response?.data?.detail || '素材搜尋失敗，請稍後再試。',
+      });
+    }
+  };
+
+  const browseMaterial = async (index, direction) => {
+    const segment = segmentsRef.current[index];
+    const nextIndex = segment.materialIndex + direction;
+
+    if (nextIndex >= 0 && nextIndex < segment.materialHistory.length) {
+      resetResultVideo();
+      updateSegmentState(index, {
+        material: segment.materialHistory[nextIndex],
+        materialIndex: nextIndex,
+        showMaterial: true,
+        materialError: '',
+      });
+      return;
+    }
+
+    if (direction < 0 || segment.materialStatus === 'searching') return;
+
+    resetResultVideo();
+    updateSegmentState(index, { materialStatus: 'searching', materialError: '' });
+
+    try {
+      const res = await api.post('/api/pixabay/video/', {
+        keyword: segment.keyword,
+        min_duration: segment.duration,
+        exclude_ids: segment.materialIds,
+      });
+      const materialHistory = [...segment.materialHistory, res.data];
+
+      updateSegmentState(index, {
+        materialStatus: 'ready',
+        material: res.data,
+        materialIds: [...segment.materialIds, res.data.id],
+        materialHistory,
+        materialIndex: materialHistory.length - 1,
+        showMaterial: true,
+        materialError: '',
+      });
+    } catch (error) {
+      updateSegmentState(index, {
+        materialStatus: 'ready',
+        materialError: error.response?.data?.detail || '找不到更多素材，請換個關鍵字。',
       });
     }
   };
@@ -564,10 +355,7 @@ function Home() {
       (segment) =>
         !segment.text.trim() ||
         !segment.audioUrl ||
-        (segment.materialSource === 'builtin'
-          ? !segment.builtinScene ||
-            (!segment.material?.videoUrl && !segment.material?.fallbackImageUrl)
-          : !segment.material?.videoUrl),
+        !segment.material?.videoUrl,
     );
 
     if (invalidSegmentIndex >= 0) {
@@ -585,11 +373,8 @@ function Home() {
           segments: segments.map((segment) => ({
             text: segment.text,
             duration: segment.duration,
-            materialType: segment.materialSource,
+            materialType: 'external',
             videoUrl: segment.material?.videoUrl || '',
-            fallbackImageUrl: segment.material?.fallbackImageUrl || '',
-            loopMaterial: segment.materialSource === 'builtin',
-            builtinScene: segment.builtinScene,
           })),
         },
         { responseType: 'blob' },
@@ -634,7 +419,7 @@ function Home() {
     setWorkflowStep(1);
   };
 
-  const showScenePicker = () => {
+  const showSegmentEditor = () => {
     const nextSegmentCount = extraSegmentCount;
 
     if (nextSegmentCount !== segmentCount) {
@@ -643,79 +428,6 @@ function Home() {
     }
 
     setWorkflowStep(2);
-  };
-
-  const selectBuiltinScene = (sceneId) => {
-    if (sceneId === selectedBuiltinScene) return;
-
-    resetResultVideo();
-    talkingCompositeRef.current = null;
-    setSelectedBuiltinScene(sceneId);
-    setSegments((currentSegments) =>
-      currentSegments.map((segment, index) => {
-        builtinMaterialRequestRefs.current[index] =
-          (builtinMaterialRequestRefs.current[index] || 0) + 1;
-        builtinCanvasRefs.current[index] = null;
-
-        if (segment.materialSource !== 'builtin') {
-          return { ...segment, builtinScene: sceneId, builtinCompositeKey: '' };
-        }
-
-        return {
-          ...segment,
-          builtinScene: sceneId,
-          builtinCompositeKey: '',
-          materialStatus: 'idle',
-          material: null,
-          showMaterial: false,
-          materialError: '',
-        };
-      }),
-    );
-  };
-
-  const selectBuiltinCharacter = (characterId) => {
-    if (characterId === selectedBuiltinCharacter) return;
-
-    resetResultVideo();
-    talkingCompositeRef.current = null;
-    setSelectedBuiltinCharacter(characterId);
-    setSegments((currentSegments) =>
-      currentSegments.map((segment, index) => {
-        builtinMaterialRequestRefs.current[index] =
-          (builtinMaterialRequestRefs.current[index] || 0) + 1;
-        builtinCanvasRefs.current[index] = null;
-
-        if (segment.materialSource !== 'builtin') {
-          return { ...segment, builtinCharacter: characterId, builtinCompositeKey: '' };
-        }
-
-        return {
-          ...segment,
-          builtinCharacter: characterId,
-          builtinCompositeKey: '',
-          materialStatus: 'idle',
-          material: null,
-          showMaterial: false,
-          materialError: '',
-        };
-      }),
-    );
-  };
-
-  const showSegmentEditor = () => {
-    if (!selectedBuiltinCharacter || !selectedBuiltinScene) return;
-
-    setSegments((currentSegments) =>
-      currentSegments.map((segment) => ({
-        ...segment,
-        builtinCharacter: selectedBuiltinCharacter,
-        builtinScene: selectedBuiltinScene,
-        builtinCompositeKey: '',
-      })),
-    );
-    talkingCompositeRef.current = null;
-    setWorkflowStep(3);
   };
 
   const getMaterialButtonText = (segment) => {
@@ -748,32 +460,19 @@ function Home() {
         segment.status === 'ready' &&
         Boolean(segment.audioUrl) &&
         segment.materialStatus === 'ready' &&
-        (segment.materialSource === 'builtin'
-          ? Boolean(
-              segment.builtinCharacter &&
-              segment.builtinScene &&
-              segment.builtinCompositeKey === getBuiltinCompositeKey(segment, videoFormat) &&
-              segment.material?.videoUrl,
-            )
-          : Boolean(segment.material?.videoUrl)),
+        Boolean(segment.material?.videoUrl),
     );
   const isPreparingSegments = segments.some(
     (segment) =>
       segment.status === 'generating' ||
-      segment.materialStatus === 'rendering' ||
       segment.materialStatus === 'searching',
   );
-
-  const selectedSceneName =
-    builtInScenes.find((scene) => scene.id === selectedBuiltinScene)?.name || '';
-  const selectedCharacterName =
-    builtInCharacters.find((character) => character.id === selectedBuiltinCharacter)?.name || '';
 
   return (
     <main className="workspace-page">
       <section className="task-form">
         {workflowStep === 1 && <aside className="settings-panel">
-          <p className="workflow-step-label">步驟 1 / 3 · 基本設定</p>
+          <p className="workflow-step-label">步驟 1 / 2 · 基本設定</p>
           <label htmlFor="voice">選擇聲音</label>
           <select
             id="voice"
@@ -843,101 +542,13 @@ function Home() {
               </option>
             ))}
           </select>
-          <button type="button" className="next-step-button" onClick={showScenePicker}>
+          <button type="button" className="next-step-button" onClick={showSegmentEditor}>
             下一步
           </button>
         </aside>}
 
-        {workflowStep === 2 && <section className="scene-step-panel">
-          <div className="scene-step-heading">
-            <p className="workflow-step-label">步驟 2 / 3 · 選擇角色與場景</p>
-            <p>選定的角色與場景會套用到第三步所有「說話畫面」片段。</p>
-          </div>
-          <section className="selection-block">
-            <div className="selection-block-heading">
-              <h2>選擇角色</h2>
-              <p>{selectedCharacterName ? `已選擇：${selectedCharacterName}` : '請選擇一個角色'}</p>
-            </div>
-            <div className="material-choice-grid material-choice-grid--characters">
-              {builtInCharacters.map((character) => (
-                <button
-                  type="button"
-                  key={character.id}
-                  className={`material-choice ${selectedBuiltinCharacter === character.id ? 'is-selected' : ''}`}
-                  onClick={() => selectBuiltinCharacter(character.id)}
-                >
-                  <BuiltInMaterialCanvas
-                    characterId={character.id}
-                    sceneId={selectedBuiltinScene || 'classroom'}
-                    videoFormat={videoFormat}
-                    animate={false}
-                    className={`material-choice-canvas material-choice-canvas--${videoFormat}`}
-                  />
-                  <span>{character.name}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-          <section className="selection-block">
-            <div className="selection-block-heading">
-              <h2>選擇場景</h2>
-              <p>{selectedSceneName ? `已選擇：${selectedSceneName}` : '請選擇一個場景'}</p>
-            </div>
-            <div className="material-choice-grid material-choice-grid--scenes">
-              {builtInScenes.map((scene) => (
-                <button
-                  type="button"
-                  key={scene.id}
-                  className={`material-choice ${selectedBuiltinScene === scene.id ? 'is-selected' : ''}`}
-                  onClick={() => selectBuiltinScene(scene.id)}
-                >
-                  <BuiltInMaterialCanvas
-                    characterId={selectedBuiltinCharacter || 'rabbit'}
-                    sceneId={scene.id}
-                    videoFormat={videoFormat}
-                    animate={false}
-                    className={`material-choice-canvas material-choice-canvas--${videoFormat}`}
-                  />
-                  <span>{scene.name}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-          <div className="workflow-actions">
-            <button type="button" className="back-step-button" onClick={() => setWorkflowStep(1)}>
-              上一步
-            </button>
-            <button
-              type="button"
-              className="next-step-button"
-              onClick={showSegmentEditor}
-              disabled={!selectedBuiltinCharacter || !selectedBuiltinScene}
-            >
-              下一步
-            </button>
-          </div>
-        </section>}
-
-        {workflowStep === 3 && <section className="work-panel">
-          <p className="workflow-step-label">步驟 3 / 3 · 片段與素材</p>
-          {segments.some((segment) => segment.materialSource === 'builtin') && (
-            <section className="talking-scene-summary">
-              <div>
-                <h2>說話畫面</h2>
-                <p>統一使用「{selectedCharacterName}」角色與「{selectedSceneName}」場景。</p>
-              </div>
-              <div className={`talking-scene-preview talking-scene-preview--${videoFormat}`}>
-                <BuiltInMaterialCanvas
-                  characterId={selectedBuiltinCharacter}
-                  sceneId={selectedBuiltinScene}
-                  videoFormat={videoFormat}
-                  onAnimationError={handleTalkingAnimationError}
-                  onCompositeReady={handleTalkingCompositeReady}
-                  className="builtin-material-canvas"
-                />
-              </div>
-            </section>
-          )}
+        {workflowStep === 2 && <section className="work-panel">
+          <p className="workflow-step-label">步驟 2 / 2 · 旁白與素材</p>
           <div className="segment-list">
             {segments.map((segment, index) => (
               <div className="segment-row" key={index}>
@@ -964,46 +575,47 @@ function Home() {
                   </button>
                 </div>
                 <div className="material-source-area">
-                  <label htmlFor={`material-source-${index}`}>選擇素材</label>
-                  <select
-                    id={`material-source-${index}`}
-                    value={segment.materialSource}
-                    onChange={(e) => updateMaterialSource(index, e.target.value)}
-                  >
-                    <option value="builtin">說話畫面</option>
-                    <option value="external">外部素材</option>
-                  </select>
-
-                  {segment.materialSource === 'external' && (
-                    <div className="external-material-controls">
-                      <input
-                        type="text"
-                        className="keyword-input"
-                        value={segment.keyword}
-                        onChange={(e) => updateSegmentKeyword(index, e.target.value)}
-                        placeholder="關鍵字"
-                      />
-                      <button
-                        type="button"
-                        className="material-button"
-                        onClick={() => searchMaterial(index)}
-                        disabled={segment.materialStatus === 'searching'}
-                      >
-                        {getMaterialButtonText(segment)}
-                      </button>
-                    </div>
-                  )}
-                  {segment.materialSource === 'builtin' && (
-                    <p className="talking-scene-note">
-                      使用第二步選擇的「{selectedCharacterName}」與「{selectedSceneName}」說話畫面。
-                      {segment.materialStatus === 'rendering' && ' 正在準備素材...'}
-                    </p>
-                  )}
+                  <label htmlFor={`material-keyword-${index}`}>搜尋影片素材</label>
+                  <div className="external-material-controls">
+                    <input
+                      id={`material-keyword-${index}`}
+                      type="text"
+                      className="keyword-input"
+                      value={segment.keyword}
+                      onChange={(e) => updateSegmentKeyword(index, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') searchMaterial(index);
+                      }}
+                      placeholder="例如：海邊、咖啡、城市"
+                    />
+                    <button
+                      type="button"
+                      className="material-button"
+                      onClick={() => searchMaterial(index)}
+                      disabled={segment.materialStatus === 'searching'}
+                    >
+                      {getMaterialButtonText(segment)}
+                    </button>
+                  </div>
                 </div>
                 {segment.error && <p className="segment-error">{segment.error}</p>}
                 {segment.materialError && <p className="segment-error">{segment.materialError}</p>}
                 {segment.showMaterial && segment.material && (
-                  <div className="material-preview">
+                  <div
+                    className="material-preview"
+                    tabIndex="0"
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowLeft') {
+                        event.preventDefault();
+                        browseMaterial(index, -1);
+                      }
+                      if (event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        browseMaterial(index, 1);
+                      }
+                    }}
+                    aria-label={`片段 ${index + 1} 素材預覽，可使用左右方向鍵更換素材`}
+                  >
                     <video
                       src={getTrimmedVideoUrl(segment.material.videoUrl, segment.material.trimEnd)}
                       poster={segment.material.thumbnail}
@@ -1012,14 +624,29 @@ function Home() {
                       onPlay={handleMaterialPlay}
                       onTimeUpdate={(event) => handleMaterialTimeUpdate(event, segment.material.trimEnd)}
                     />
-                    <button
-                      type="button"
-                      className="replace-material-button"
-                      onClick={() => searchMaterial(index, true)}
-                      disabled={segment.materialStatus === 'searching'}
-                    >
-                      更換素材
-                    </button>
+                    <div className="material-browser-controls">
+                      <button
+                        type="button"
+                        className="material-arrow-button"
+                        onClick={() => browseMaterial(index, -1)}
+                        disabled={segment.materialIndex <= 0 || segment.materialStatus === 'searching'}
+                        aria-label="上一個素材"
+                      >
+                        ←
+                      </button>
+                      <span aria-live="polite">
+                        素材 {segment.materialIndex + 1}
+                      </span>
+                      <button
+                        type="button"
+                        className="material-arrow-button"
+                        onClick={() => browseMaterial(index, 1)}
+                        disabled={segment.materialStatus === 'searching'}
+                        aria-label="下一個素材"
+                      >
+                        →
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1031,7 +658,7 @@ function Home() {
               <button
                 type="button"
                 className="back-step-button"
-                onClick={() => setWorkflowStep(2)}
+                onClick={() => setWorkflowStep(1)}
                 disabled={composeStatus === 'composing'}
               >
                 上一步
@@ -1058,8 +685,18 @@ function Home() {
             )}
             {composeError && <p className="segment-error">{composeError}</p>}
             {resultVideoUrl && (
-              <div className={`result-preview result-preview--${videoFormat}`}>
-                <video src={resultVideoUrl} controls />
+              <div className="result-area">
+                <p className="result-title">影片已完成</p>
+                <div className={`result-preview result-preview--${videoFormat}`}>
+                  <video src={resultVideoUrl} controls />
+                </div>
+                <a
+                  className="download-button"
+                  href={resultVideoUrl}
+                  download="video.mp4"
+                >
+                  下載影片
+                </a>
               </div>
             )}
           </div>
