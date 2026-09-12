@@ -22,7 +22,8 @@ from django.http import HttpResponse
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from .models import Note, SavedVideo
@@ -229,37 +230,44 @@ def concatenate_rendered_video_segments(segment_paths, output_path):
     return output_path
 
 
+def workspace_id(request):
+    try:
+        return uuid.UUID(request.headers.get("X-Workspace-ID", ""))
+    except (ValueError, AttributeError):
+        raise ValidationError({"detail": "A valid X-Workspace-ID is required."})
+
+
 class NoteListCreate(generics.ListCreateAPIView):
     serializer_class = NoteSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
-        user = self.request.user
-        return Note.objects.filter(author=user)
+        workspace = workspace_id(self.request)
+        return Note.objects.filter(workspace_id=workspace)
 
     def perform_create(self, serializer):
         if serializer.is_valid():
-            serializer.save(author=self.request.user)
+            serializer.save(workspace_id=workspace_id(self.request))
         else:
             print(serializer.errors)
 
 
 class NoteDelete(generics.DestroyAPIView):
     serializer_class = NoteSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
-        user = self.request.user
-        return Note.objects.filter(author=user)
+        workspace = workspace_id(self.request)
+        return Note.objects.filter(workspace_id=workspace)
 
 
 class SavedVideoListCreate(generics.ListCreateAPIView):
     serializer_class = SavedVideoSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
     parser_classes = [MultiPartParser]
 
     def get_queryset(self):
-        return SavedVideo.objects.filter(author=self.request.user).order_by("-created_at")
+        return SavedVideo.objects.filter(workspace_id=workspace_id(self.request)).order_by("-created_at")
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -277,7 +285,7 @@ class SavedVideoListCreate(generics.ListCreateAPIView):
             return Response({"detail": "請先選擇要儲存的影片。"}, status=status.HTTP_400_BAD_REQUEST)
 
         saved_video = SavedVideo.objects.create(
-            author=request.user,
+            workspace_id=workspace_id(request),
             title=request.data.get("title") or "合成影片",
             video=video_file,
             video_format=video_format,
@@ -288,10 +296,10 @@ class SavedVideoListCreate(generics.ListCreateAPIView):
 
 class SavedVideoDelete(generics.DestroyAPIView):
     serializer_class = SavedVideoSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
-        return SavedVideo.objects.filter(author=self.request.user)
+        return SavedVideo.objects.filter(workspace_id=workspace_id(self.request))
 
 
 EDGE_TTS_VOICES = {
@@ -647,14 +655,14 @@ def create_builtin_video_clip(target_size, duration, scene_id, object_id, positi
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def tts_voices(request):
     data = [{"id": voice_id, "name": name} for voice_id, name in EDGE_TTS_VOICES.items()]
     return Response(data)
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def text_to_speech(request):
     text = request.data.get("text", "").strip()
     voice = request.data.get("voice", "zh-TW-HsiaoChenNeural")
@@ -689,7 +697,7 @@ def choose_video_file(video_files):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def search_pixabay_video(request):
     keyword = request.data.get("keyword", "").strip()
     min_duration = float(request.data.get("min_duration") or 0)
@@ -771,7 +779,7 @@ def search_pixabay_video(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 @parser_classes([MultiPartParser])
 def upload_builtin_material(request):
     video_file = request.FILES.get("video")
@@ -795,7 +803,7 @@ def upload_builtin_material(request):
         video_content_type = (video_file.content_type or "").lower()
         video_suffix = ".mp4" if "mp4" in video_content_type else ".webm"
         video_storage_name = default_storage.save(
-            f"builtin_materials/{request.user.pk}/{uuid.uuid4().hex}{video_suffix}",
+            f"builtin_materials/{workspace_id(request)}/{uuid.uuid4().hex}{video_suffix}",
             video_file,
         )
         video_media_path = f"{settings.MEDIA_URL.rstrip('/')}/{video_storage_name}"
@@ -805,7 +813,7 @@ def upload_builtin_material(request):
         image_content_type = (fallback_image.content_type or "").lower()
         image_suffix = ".png" if "png" in image_content_type else ".jpg"
         image_storage_name = default_storage.save(
-            f"builtin_materials/{request.user.pk}/{uuid.uuid4().hex}{image_suffix}",
+            f"builtin_materials/{workspace_id(request)}/{uuid.uuid4().hex}{image_suffix}",
             fallback_image,
         )
         image_media_path = f"{settings.MEDIA_URL.rstrip('/')}/{image_storage_name}"
@@ -815,7 +823,7 @@ def upload_builtin_material(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([AllowAny])
 def compose_video(request):
     voice = request.data.get("voice", "zh-TW-HsiaoChenNeural")
     video_format = request.data.get("video_format", "long")

@@ -6,7 +6,9 @@ class Note(models.Model):
     title=models.CharField(max_length=100)
     content=models.TextField()
     created_at=models.DateTimeField(auto_now_add=True)
-    author=models.ForeignKey(User,on_delete=models.CASCADE,related_name='notes')
+    author=models.ForeignKey(User,on_delete=models.CASCADE,related_name='notes', null=True)
+
+    workspace_id = models.UUIDField(null=True, db_index=True, editable=False)
 
     def __str__(self):
         return self.title
@@ -25,7 +27,7 @@ class SavedVideo(models.Model):
         default=VideoFormat.LONG,
     )
     created_at = models.DateTimeField(auto_now_add=True)
-    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="saved_videos")
+    author = models.ForeignKey(User, on_delete=models.CASCADE, related_name="saved_videos", null=True)
 
     def delete(self, *args, **kwargs):
         storage = self.video.storage
@@ -34,6 +36,8 @@ class SavedVideo(models.Model):
 
         if name and storage.exists(name):
             storage.delete(name)
+
+    workspace_id = models.UUIDField(null=True, db_index=True, editable=False)
 
     def __str__(self):
         return self.title
