@@ -24,6 +24,7 @@ const createEmptySegment = () => ({
   materialHistory: [],
   materialIndex: -1,
   showMaterial: false,
+  collapsed: false,
   error: '',
   materialError: '',
 });
@@ -206,6 +207,7 @@ function Home() {
           materialHistory: [],
           materialIndex: -1,
           showMaterial: false,
+          collapsed: false,
           error: '',
           materialError: '',
         };
@@ -227,6 +229,7 @@ function Home() {
               materialHistory: [],
               materialIndex: -1,
               showMaterial: false,
+              collapsed: false,
               materialError: '',
             }
           : segment,
@@ -258,7 +261,7 @@ function Home() {
       return;
     }
 
-    updateSegmentState(index, { status: 'generating', error: '' });
+    updateSegmentState(index, { status: 'generating', collapsed: false, error: '' });
 
     try {
       const res = await api.post(
@@ -268,6 +271,8 @@ function Home() {
       );
       const audioUrl = URL.createObjectURL(res.data);
       const duration = await getAudioDuration(audioUrl);
+
+      if (segment.audioUrl) URL.revokeObjectURL(segment.audioUrl);
 
       updateSegmentState(index, {
         status: 'ready',
@@ -296,24 +301,16 @@ function Home() {
         errorMessage = error.response.data.detail;
       }
 
-      updateSegmentState(index, { status: 'idle', error: errorMessage });
+      updateSegmentState(index, {
+        status: segment.audioUrl ? 'ready' : 'idle',
+        error: errorMessage,
+      });
     }
   };
 
   const playSegmentAudio = (audioUrl) => {
     const audio = new Audio(audioUrl);
     audio.play();
-  };
-
-  const handleSegmentAction = (index) => {
-    const segment = segments[index];
-
-    if (segment.audioUrl) {
-      playSegmentAudio(segment.audioUrl);
-      return;
-    }
-
-    generateSegmentAudio(index);
   };
 
   const searchMaterial = async (index) => {
@@ -499,6 +496,14 @@ function Home() {
     return '選擇素材';
   };
 
+  const isSegmentComplete = (segment) =>
+    segment.status === 'ready' &&
+    Boolean(segment.audioUrl) &&
+    segment.materialStatus === 'ready' &&
+    Boolean(segment.material?.videoUrl);
+
+  const completedSegmentCount = segments.filter(isSegmentComplete).length;
+
   const handleMaterialPlay = (event) => {
     if (event.currentTarget.currentTime > 0.1) {
       event.currentTarget.currentTime = 0;
@@ -621,59 +626,105 @@ function Home() {
         </aside>}
 
         {workflowStep === 2 && <section className="work-panel">
-          <p className="workflow-step-label">步驟 2 / 2 · 旁白與素材</p>
+          <div className="workflow-heading">
+            <p className="workflow-step-label">步驟 2 / 2 · 旁白與素材</p>
+            <p className="segment-overview" aria-live="polite">
+              已完成 {completedSegmentCount} / {segments.length} 個片段
+            </p>
+          </div>
           <div className="segment-list">
             {segments.map((segment, index) => (
-              <div className="segment-row" key={index}>
-                <label htmlFor={`segment-${index}`}>片段 {index + 1}</label>
-                <div className="segment-controls">
-                  <input
-                    type="text"
-                    id={`segment-${index}`}
-                    value={segment.text}
-                    onChange={(e) => updateSegmentText(index, e.target.value)}
-                    placeholder="請輸入這段旁白內容"
-                  />
-                  <button
-                    type="button"
-                    className="segment-button"
-                    onClick={() => handleSegmentAction(index)}
-                    disabled={segment.status === 'generating'}
-                  >
-                    {segment.status === 'generating'
-                      ? '生成中...'
-                      : segment.audioUrl
-                        ? `${formatDuration(segment.duration)} / ${formatFileSize(segment.size)}`
-                        : '生成音檔'}
-                  </button>
-                </div>
-                <div className="material-source-area">
-                  <label htmlFor={`material-keyword-${index}`}>搜尋影片素材</label>
-                  <div className="external-material-controls">
-                    <input
-                      id={`material-keyword-${index}`}
-                      type="text"
-                      className="keyword-input"
-                      value={segment.keyword}
-                      onChange={(e) => updateSegmentKeyword(index, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') searchMaterial(index);
-                      }}
-                      placeholder="例如：海邊、咖啡、城市"
-                    />
-                    <button
-                      type="button"
-                      className="material-button"
-                      onClick={() => searchMaterial(index)}
-                      disabled={segment.materialStatus === 'searching'}
-                    >
-                      {getMaterialButtonText(segment)}
-                    </button>
+              <div
+                className={`segment-row${segment.collapsed ? ' segment-row--collapsed' : ''}`}
+                key={index}
+              >
+                <div className="segment-header">
+                  <label htmlFor={`segment-${index}`}>片段 {index + 1}</label>
+                  <div className="segment-statuses">
+                    <span className={segment.status === 'ready' && segment.audioUrl ? 'status-chip status-chip--ready' : 'status-chip'}>
+                      音檔{segment.status === 'generating' ? '生成中' : segment.audioUrl ? '完成' : '未完成'}
+                    </span>
+                    <span className={segment.materialStatus === 'ready' && segment.material ? 'status-chip status-chip--ready' : 'status-chip'}>
+                      素材{segment.materialStatus === 'searching' ? '搜尋中' : segment.material ? '完成' : '未完成'}
+                    </span>
+                    {isSegmentComplete(segment) && (
+                      <button
+                        type="button"
+                        className="segment-collapse-button"
+                        aria-expanded={!segment.collapsed}
+                        onClick={() => updateSegmentState(index, { collapsed: !segment.collapsed })}
+                      >
+                        {segment.collapsed ? '展開' : '收合'}
+                      </button>
+                    )}
                   </div>
                 </div>
-                {segment.error && <p className="segment-error">{segment.error}</p>}
-                {segment.materialError && <p className="segment-error">{segment.materialError}</p>}
-                {segment.showMaterial && segment.material && (
+                {!segment.collapsed && <>
+                  <div className="narration-field">
+                    <textarea
+                      id={`segment-${index}`}
+                      value={segment.text}
+                      onChange={(e) => updateSegmentText(index, e.target.value)}
+                      placeholder="請輸入這段旁白內容"
+                      rows="4"
+                      maxLength="3000"
+                    />
+                    <span className="character-count">{segment.text.length} / 3000</span>
+                  </div>
+                  <div className="audio-actions">
+                    <button
+                      type="button"
+                      className="segment-button"
+                      onClick={() => generateSegmentAudio(index)}
+                      disabled={segment.status === 'generating'}
+                    >
+                      {segment.status === 'generating'
+                        ? '音檔生成中…'
+                        : segment.audioUrl
+                          ? '重新生成音檔'
+                          : '生成音檔'}
+                    </button>
+                    {segment.audioUrl && (
+                      <button
+                        type="button"
+                        className="audio-preview-button"
+                        onClick={() => playSegmentAudio(segment.audioUrl)}
+                      >
+                        播放音檔 · {formatDuration(segment.duration)} · {formatFileSize(segment.size)}
+                      </button>
+                    )}
+                  </div>
+                  <div className="material-source-area">
+                    <label htmlFor={`material-keyword-${index}`}>搜尋影片素材</label>
+                    {!segment.audioUrl && (
+                      <p className="field-hint">完成音檔後，即可依照旁白長度選擇素材。</p>
+                    )}
+                    <div className="external-material-controls">
+                      <input
+                        id={`material-keyword-${index}`}
+                        type="text"
+                        className="keyword-input"
+                        value={segment.keyword}
+                        onChange={(e) => updateSegmentKeyword(index, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && segment.audioUrl) searchMaterial(index);
+                        }}
+                        placeholder="例如：海邊、咖啡、城市"
+                        disabled={!segment.audioUrl || segment.status === 'generating'}
+                      />
+                      <button
+                        type="button"
+                        className="material-button"
+                        onClick={() => searchMaterial(index)}
+                        disabled={!segment.audioUrl || segment.materialStatus === 'searching'}
+                      >
+                        {getMaterialButtonText(segment)}
+                      </button>
+                    </div>
+                  </div>
+                  {segment.error && <p className="segment-error">{segment.error}</p>}
+                  {segment.materialError && <p className="segment-error">{segment.materialError}</p>}
+                  {segment.showMaterial && segment.material && (
                   <div
                     className="material-preview"
                     tabIndex="0"
@@ -723,13 +774,14 @@ function Home() {
                       </button>
                     </div>
                   </div>
-                )}
+                  )}
+                </>}
               </div>
             ))}
           </div>
 
           <div className="compose-panel">
-            <div className="compose-actions">
+            <div className={`compose-actions${composeStatus === 'ready' ? ' compose-actions--complete' : ''}`}>
               <button
                 type="button"
                 className="back-step-button"
@@ -761,7 +813,7 @@ function Home() {
             {(composeStatus === 'composing' || composeStatus === 'ready') && (
               <div className={`compose-progress compose-progress--${composeStatus}`}>
                 <div className="compose-progress-heading">
-                  <span>{composeStatus === 'ready' ? '合成完成' : '影片合成中'}</span>
+                  <span>{composeStatus === 'ready' ? '合成完成' : '影片合成中 · 預估進度'}</span>
                   <strong>{Math.round(composeProgress)}%</strong>
                 </div>
                 <div
